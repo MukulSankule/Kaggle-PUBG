@@ -1,0 +1,975 @@
+# This Python 3 environment comes with many helpful analytics libraries installed
+# It is defined by the kaggle/python docker image: https://github.com/kaggle/docker-python
+# For example, here's several helpful packages to load in 
+
+import numpy as np # linear algebra
+import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
+import time
+# Input data files are available in the "../input/" directory.
+# For example, running this (by clicking run or pressing Shift+Enter) will list the files in the input directory
+
+import os
+print(os.listdir("../input"))
+
+# Any results you write to the current directory are saved as output.
+
+train = pd.read_csv('../input/train_V2.csv')
+test = pd.read_csv('../input/test_V2.csv')
+print(train.shape, test.shape)
+
+#Subsetting training set
+import random
+train = train.loc[train.matchId.isin(random.sample(list(train.matchId.unique()),6000)),:].reset_index(drop=True)
+print(train.shape);print(train.matchId.nunique())
+
+#Removing NA from train
+train = train.loc[~train.winPlacePerc.isnull(),:].reset_index(drop=True)
+
+#Outliers
+train = train.loc[~((train.loc[:,'walkDistance'] == 0) & (train.loc[:,'kills'] != 0)),:]
+train = train.loc[~((train.loc[:,'walkDistance'] == 0) & (train.loc[:,'assists'] != 0)),:]
+train = train.loc[~((train.loc[:,'walkDistance'] == 0) & (train.loc[:,'revives'] != 0)),:]
+train = train.loc[~((train.loc[:,'walkDistance'] == 0) & (train.loc[:,'teamKills'] != 0)),:]
+train = train.loc[~((train.loc[:,'walkDistance'] == 0) & (train.loc[:,'weaponsAcquired'] != 0)),:]
+train = train.loc[~((train.loc[:,'walkDistance'] == 0) & (train.loc[:,'DBNOs'] != 0)),:]
+train = train.loc[~((train.loc[:,'walkDistance'] == 0) & (train.loc[:,'boosts'] != 0)),:]
+train = train.loc[~((train.loc[:,'walkDistance'] == 0) & (train.loc[:,'heals'] != 0)),:]
+train = train.loc[~((train.loc[:,'walkDistance'] == 0) & (train.loc[:,'rideDistance'] != 0)),:]
+
+print(train.columns); print(train.shape)
+
+
+#Data Compression
+# Function, which reduce memory usage. 
+# This function I took from ready kernel (https://www.kaggle.com/gemartin/load-data-reduce-memory-usage)
+def reduce_mem_usage(df):
+    """ iterate through all the columns of a dataframe and modify the data type
+        to reduce memory usage.        
+    """
+    start_mem = df.memory_usage().sum() / 1024**2
+    print('Memory usage of dataframe is {:.2f} MB'.format(start_mem))
+
+    for col in df.columns:
+        col_type = df[col].dtype
+
+        if col_type != object:
+            c_min = df[col].min()
+            c_max = df[col].max()
+            if str(col_type)[:3] == 'int':
+                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
+                    df[col] = df[col].astype(np.int8)
+                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
+                    df[col] = df[col].astype(np.int16)
+                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
+                    df[col] = df[col].astype(np.int32)
+                elif c_min > np.iinfo(np.int64).min and c_max < np.iinfo(np.int64).max:
+                    df[col] = df[col].astype(np.int64)  
+            else:
+                if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max:
+                    df[col] = df[col].astype(np.float16)
+                elif c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
+                    df[col] = df[col].astype(np.float32)
+                else:
+                    df[col] = df[col].astype(np.float64)
+
+    end_mem = df.memory_usage().sum() / 1024**2
+    print('Memory usage after optimization is: {:.2f} MB'.format(end_mem))
+    print('Decreased by {:.1f}%'.format(100 * (start_mem - end_mem) / start_mem))
+    return df
+
+train = reduce_mem_usage(train)
+test = reduce_mem_usage(test)
+
+
+
+import time
+start = time.time()
+
+
+#Removing var with high NA's
+del test['rankPoints']
+del test['killPoints']
+del test['winPoints']
+
+#Feauture Engineering Test
+print('Making test features2....')
+test.loc[:,'hits'] = test.loc[:,'DBNOs'] + test.loc[:,'kills']
+test.loc[:,'tw'] = test.loc[:,'assists'] + test.loc[:,'kills']
+test.loc[:,'DBNOsRate'] = test.loc[:,'DBNOs']/(test.loc[:,'hits'] + 1)
+test.loc[:,'as'] = test.loc[:,'assists']/(test.loc[:,'tw'] + 1)
+test['ngroup'] = test.groupby(['groupId']).Id.transform('count')
+test['nmatch'] = test.groupby(['matchId']).Id.transform('count')
+test.loc[:,'totDistance'] = test.loc[:,'rideDistance'] + test.loc[:,'swimDistance'] + test.loc[:,'walkDistance']
+test.loc[:,'healsBoosts'] = test.loc[:,'heals'] + test.loc[:,'boosts']
+test.loc[:,'teamWork'] = test.loc[:,'assists'] + test.loc[:,'revives']
+test.loc[:,'killStreaksNorm'] = test.loc[:,'killStreaks']/(test.loc[:,'kills']+1)
+test.loc[:,'squad'] = np.where(test.loc[:,'matchType'].isin(['squad-fpp','squad','normal-squad-fpp','normal-squad']),1,0)
+test.loc[:,'duo'] = np.where(test.loc[:,'matchType'].isin(['duo-fpp','duo','normal-duo-fpp','normal-duo']),1,0)
+test.loc[:,'solo'] = np.where(test.loc[:,'matchType'].isin(['solo-fpp','solo','normal-solo-fpp','normal-solo']),1,0)
+test.loc[:,'crash'] = np.where(test.loc[:,'matchType'].isin(['crashfpp','crashtpp']),1,0)
+test.loc[:,'flare'] = np.where(test.loc[:,'matchType'].isin(['flarefpp','flaretpp']),1,0)
+
+test.loc[:,'killsRate'] = test.loc[:,'kills']/(test.loc[:,'hits'] + 1)
+test.loc[:,'totalDamage'] = test.loc[:,'DBNOs'] + test.loc[:,'kills'] + test.loc[:,'assists']
+test.loc[:,'wa'] = test.loc[:,'weaponsAcquired']/(test.loc[:,'kills'] + 1)
+test.loc[:,'ak'] = test.loc[:,'assists']*test.loc[:,'kills']
+test.loc[:,'avgSpeed1'] = test.loc[:,'walkDistance']/test.loc[:,'matchDuration']
+test.loc[:,'avgSpeed2'] = test.loc[:,'totDistance']/test.loc[:,'matchDuration']
+test.loc[:,'avgSpeed3'] = test.loc[:,'rideDistance']/test.loc[:,'matchDuration']
+test.loc[:,'avgSpeed4'] = test.loc[:,'swimDistance']/test.loc[:,'matchDuration']
+
+
+test.loc[:,'match1'] = np.where(test.loc[:,'matchDuration'] <= 1600,1,0)
+test.loc[:,'match2'] = np.where(test.loc[:,'matchDuration'] > 1600,1,0)
+
+#Removing var with high NA's
+del train['rankPoints']
+del train['killPoints']
+del train['winPoints']
+
+
+#Feauture Engineering Train
+print('Making train features2....')
+train.loc[:,'hits'] = train.loc[:,'DBNOs'] + train.loc[:,'kills']
+train.loc[:,'tw'] = train.loc[:,'assists'] + train.loc[:,'kills']
+train.loc[:,'DBNOsRate'] = train.loc[:,'DBNOs']/(train.loc[:,'hits'] + 1)
+train.loc[:,'as'] = train.loc[:,'assists']/(train.loc[:,'tw'] + 1)
+train['ngroup'] = train.groupby(['groupId']).Id.transform('count')
+train['nmatch'] = train.groupby(['matchId']).Id.transform('count')
+train.loc[:,'totDistance'] = train.loc[:,'rideDistance'] + train.loc[:,'swimDistance'] + train.loc[:,'walkDistance']
+train.loc[:,'healsBoosts'] = train.loc[:,'heals'] + train.loc[:,'boosts']
+train.loc[:,'teamWork'] = train.loc[:,'assists'] + train.loc[:,'revives']
+train.loc[:,'killStreaksNorm'] = train.loc[:,'killStreaks']/(train.loc[:,'kills']+1)
+train.loc[:,'squad'] = np.where(train.loc[:,'matchType'].isin(['squad-fpp','squad','normal-squad-fpp','normal-squad']),1,0)
+train.loc[:,'duo'] = np.where(train.loc[:,'matchType'].isin(['duo-fpp','duo','normal-duo-fpp','normal-duo']),1,0)
+train.loc[:,'solo'] = np.where(train.loc[:,'matchType'].isin(['solo-fpp','solo','normal-solo-fpp','normal-solo']),1,0)
+train.loc[:,'crash'] = np.where(train.loc[:,'matchType'].isin(['crashfpp','crashtpp']),1,0)
+train.loc[:,'flare'] = np.where(train.loc[:,'matchType'].isin(['flarefpp','flaretpp']),1,0)
+
+train.loc[:,'killsRate'] = train.loc[:,'kills']/(train.loc[:,'hits'] + 1)
+train.loc[:,'totalDamage'] = train.loc[:,'DBNOs'] + train.loc[:,'kills'] + train.loc[:,'assists']
+train.loc[:,'wa'] = train.loc[:,'weaponsAcquired']/(train.loc[:,'kills'] + 1)
+train.loc[:,'ak'] = train.loc[:,'assists']*train.loc[:,'kills']
+train.loc[:,'avgSpeed1'] = train.loc[:,'walkDistance']/train.loc[:,'matchDuration']
+train.loc[:,'avgSpeed2'] = train.loc[:,'totDistance']/train.loc[:,'matchDuration']
+train.loc[:,'avgSpeed3'] = train.loc[:,'rideDistance']/train.loc[:,'matchDuration']
+train.loc[:,'avgSpeed4'] = train.loc[:,'swimDistance']/train.loc[:,'matchDuration']
+
+
+train.loc[:,'match1'] = np.where(train.loc[:,'matchDuration'] <= 1600,1,0)
+train.loc[:,'match2'] = np.where(train.loc[:,'matchDuration'] > 1600,1,0)
+
+
+# Deleting var matchType
+del train['matchType']
+del test['matchType']
+
+
+
+
+#Group Features test
+print('Making test features....')
+
+test.loc[:,'killPlace_avg'] = test.groupby('groupId')['killPlace'].transform('mean')
+test.loc[:,'killPlace_max'] = test.groupby('groupId')['killPlace'].transform('max')
+test.loc[:,'killPlace_min'] = test.groupby('groupId')['killPlace'].transform('min')
+
+test.loc[:,'walkDistance_avg'] = test.groupby('groupId')['walkDistance'].transform('mean')
+test.loc[:,'walkDistance_max'] = test.groupby('groupId')['walkDistance'].transform('max')
+test.loc[:,'walkDistance_min'] = test.groupby('groupId')['walkDistance'].transform('min')
+
+test.loc[:,'weaponsAcquired_avg'] = test.groupby('groupId')['weaponsAcquired'].transform('mean')
+test.loc[:,'weaponsAcquired_max'] = test.groupby('groupId')['weaponsAcquired'].transform('max')
+test.loc[:,'weaponsAcquired_min'] = test.groupby('groupId')['weaponsAcquired'].transform('min')
+
+test.loc[:,'boosts_avg'] = test.groupby('groupId')['boosts'].transform('mean')
+test.loc[:,'boosts_max'] = test.groupby('groupId')['boosts'].transform('max')
+test.loc[:,'boosts_min'] = test.groupby('groupId')['boosts'].transform('min')
+
+test.loc[:,'heals_avg'] = test.groupby('groupId')['heals'].transform('mean')
+test.loc[:,'heals_max'] = test.groupby('groupId')['heals'].transform('max')
+test.loc[:,'heals_min'] = test.groupby('groupId')['heals'].transform('min')
+
+test.loc[:,'assists_avg'] = test.groupby('groupId')['assists'].transform('mean')
+test.loc[:,'assists_max'] = test.groupby('groupId')['assists'].transform('max')
+test.loc[:,'assists_min'] = test.groupby('groupId')['assists'].transform('min')
+
+test.loc[:,'revives_avg'] = test.groupby('groupId')['revives'].transform('mean')
+test.loc[:,'revives_max'] = test.groupby('groupId')['revives'].transform('max')
+test.loc[:,'revives_min'] = test.groupby('groupId')['revives'].transform('min')
+
+test.loc[:,'kills_avg'] = test.groupby('groupId')['kills'].transform('mean')
+test.loc[:,'kills_max'] = test.groupby('groupId')['kills'].transform('max')
+test.loc[:,'kills_min'] = test.groupby('groupId')['kills'].transform('min')
+
+test.loc[:,'damageDealt_avg'] = test.groupby('groupId')['damageDealt'].transform('mean')
+test.loc[:,'damageDealt_max'] = test.groupby('groupId')['damageDealt'].transform('max')
+test.loc[:,'damageDealt_min'] = test.groupby('groupId')['damageDealt'].transform('min')
+
+test.loc[:,'DBNOs_avg'] = test.groupby('groupId')['DBNOs'].transform('mean')
+test.loc[:,'DBNOs_max'] = test.groupby('groupId')['DBNOs'].transform('max')
+test.loc[:,'DBNOs_min'] = test.groupby('groupId')['DBNOs'].transform('min')
+
+test.loc[:,'headshotKills_avg'] = test.groupby('groupId')['headshotKills'].transform('mean')
+test.loc[:,'headshotKills_max'] = test.groupby('groupId')['headshotKills'].transform('max')
+test.loc[:,'headshotKills_min'] = test.groupby('groupId')['headshotKills'].transform('min')
+
+test.loc[:,'killStreaks_avg'] = test.groupby('groupId')['killStreaks'].transform('mean')
+test.loc[:,'killStreaks_max'] = test.groupby('groupId')['killStreaks'].transform('max')
+test.loc[:,'killStreaks_min'] = test.groupby('groupId')['killStreaks'].transform('min')
+
+test.loc[:,'longestKill_avg'] = test.groupby('groupId')['longestKill'].transform('mean')
+test.loc[:,'longestKill_max'] = test.groupby('groupId')['longestKill'].transform('max')
+test.loc[:,'longestKill_min'] = test.groupby('groupId')['longestKill'].transform('min')
+
+test.loc[:,'roadKills_avg'] = test.groupby('groupId')['roadKills'].transform('mean')
+test.loc[:,'roadKills_max'] = test.groupby('groupId')['roadKills'].transform('max')
+test.loc[:,'roadKills_min'] = test.groupby('groupId')['roadKills'].transform('min')
+
+test.loc[:,'teamKills_avg'] = test.groupby('groupId')['teamKills'].transform('mean')
+test.loc[:,'teamKills_max'] = test.groupby('groupId')['teamKills'].transform('max')
+test.loc[:,'teamKills_min'] = test.groupby('groupId')['teamKills'].transform('min')
+
+test.loc[:,'vehicleDestroys_avg'] = test.groupby('groupId')['vehicleDestroys'].transform('mean')
+test.loc[:,'vehicleDestroys_max'] = test.groupby('groupId')['vehicleDestroys'].transform('max')
+test.loc[:,'vehicleDestroys_min'] = test.groupby('groupId')['vehicleDestroys'].transform('min')
+
+test.loc[:,'rideDistance_avg'] = test.groupby('groupId')['rideDistance'].transform('mean')
+test.loc[:,'rideDistance_max'] = test.groupby('groupId')['rideDistance'].transform('max')
+test.loc[:,'rideDistance_min'] = test.groupby('groupId')['rideDistance'].transform('min')
+
+
+
+
+
+test.loc[:,'killPlace_sum'] = test.groupby('groupId')['killPlace'].transform('sum')
+test.loc[:,'walkDistance_sum'] = test.groupby('groupId')['walkDistance'].transform('sum')
+test.loc[:,'weaponsAcquired_sum'] = test.groupby('groupId')['weaponsAcquired'].transform('sum')
+test.loc[:,'boosts_sum'] = test.groupby('groupId')['boosts'].transform('sum')
+test.loc[:,'heals_sum'] = test.groupby('groupId')['heals'].transform('sum')
+test.loc[:,'assists_sum'] = test.groupby('groupId')['assists'].transform('sum')
+test.loc[:,'revives_sum'] = test.groupby('groupId')['revives'].transform('sum')
+test.loc[:,'kills_sum'] = test.groupby('groupId')['kills'].transform('sum')
+test.loc[:,'damageDealt_sum'] = test.groupby('groupId')['damageDealt'].transform('sum')
+test.loc[:,'DBNOs_sum'] = test.groupby('groupId')['DBNOs'].transform('sum')
+test.loc[:,'headshotKills_sum'] = test.groupby('groupId')['headshotKills'].transform('sum')
+test.loc[:,'killStreaks_sum'] = test.groupby('groupId')['killStreaks'].transform('sum')
+test.loc[:,'longestKill_sum'] = test.groupby('groupId')['longestKill'].transform('sum')
+test.loc[:,'rideDistance_sum'] = test.groupby('groupId')['rideDistance'].transform('sum')
+
+
+
+test.loc[:,'killPlace_var'] = test.groupby('groupId')['killPlace'].transform('var')
+test.loc[:,'walkDistance_var'] = test.groupby('groupId')['walkDistance'].transform('var')
+test.loc[:,'weaponsAcquired_var'] = test.groupby('groupId')['weaponsAcquired'].transform('var')
+test.loc[:,'boosts_var'] = test.groupby('groupId')['boosts'].transform('var')
+test.loc[:,'heals_var'] = test.groupby('groupId')['heals'].transform('var')
+test.loc[:,'assists_var'] = test.groupby('groupId')['assists'].transform('var')
+test.loc[:,'revives_var'] = test.groupby('groupId')['revives'].transform('var')
+test.loc[:,'kills_var'] = test.groupby('groupId')['kills'].transform('var')
+test.loc[:,'damageDealt_var'] = test.groupby('groupId')['damageDealt'].transform('var')
+test.loc[:,'DBNOs_var'] = test.groupby('groupId')['DBNOs'].transform('var')
+test.loc[:,'headshotKills_var'] = test.groupby('groupId')['headshotKills'].transform('var')
+test.loc[:,'killStreaks_var'] = test.groupby('groupId')['killStreaks'].transform('var')
+test.loc[:,'longestKill_var'] = test.groupby('groupId')['longestKill'].transform('var')
+test.loc[:,'rideDistance_var'] = test.groupby('groupId')['rideDistance'].transform('var')
+
+
+
+test.loc[:,'killPlace_std'] = test.groupby('groupId')['killPlace'].transform('std')
+test.loc[:,'walkDistance_std'] = test.groupby('groupId')['walkDistance'].transform('std')
+test.loc[:,'weaponsAcquired_std'] = test.groupby('groupId')['weaponsAcquired'].transform('std')
+test.loc[:,'boosts_std'] = test.groupby('groupId')['boosts'].transform('std')
+test.loc[:,'heals_std'] = test.groupby('groupId')['heals'].transform('std')
+test.loc[:,'assists_std'] = test.groupby('groupId')['assists'].transform('std')
+test.loc[:,'revives_std'] = test.groupby('groupId')['revives'].transform('std')
+test.loc[:,'kills_std'] = test.groupby('groupId')['kills'].transform('std')
+test.loc[:,'damageDealt_std'] = test.groupby('groupId')['damageDealt'].transform('std')
+test.loc[:,'DBNOs_std'] = test.groupby('groupId')['DBNOs'].transform('std')
+test.loc[:,'headshotKills_std'] = test.groupby('groupId')['headshotKills'].transform('std')
+test.loc[:,'killStreaks_std'] = test.groupby('groupId')['killStreaks'].transform('std')
+test.loc[:,'longestKill_std'] = test.groupby('groupId')['longestKill'].transform('std')
+test.loc[:,'rideDistance_std'] = test.groupby('groupId')['rideDistance'].transform('std')
+
+test = test.fillna(0)
+
+
+test.loc[:,'killPlace_cv'] = test.loc[:,'killPlace_std']/(test.loc[:,'killPlace_avg']+1)
+test.loc[:,'walkDistance_cv'] = test.loc[:,'walkDistance_std']/(test.loc[:,'walkDistance_avg']+1)
+test.loc[:,'weaponsAcquired_cv'] = test.loc[:,'weaponsAcquired_std']/(test.loc[:,'weaponsAcquired_avg']+1)
+test.loc[:,'boosts_cv'] = test.loc[:,'boosts_std']/(test.loc[:,'boosts_avg']+1)
+test.loc[:,'heals_cv'] = test.loc[:,'heals_std']/(test.loc[:,'heals_avg']+1)
+test.loc[:,'assists_cv'] = test.loc[:,'assists_std']/(test.loc[:,'assists_avg']+1)
+test.loc[:,'revives_cv'] = test.loc[:,'revives_std']/(test.loc[:,'revives_avg']+1)
+test.loc[:,'kills_cv'] = test.loc[:,'kills_std']/(test.loc[:,'kills_avg']+1)
+test.loc[:,'damageDealt_cv'] = test.loc[:,'damageDealt_std']/(test.loc[:,'damageDealt_avg']+1)
+test.loc[:,'DBNOs_cv'] = test.loc[:,'DBNOs_std']/(test.loc[:,'DBNOs_avg']+1)
+test.loc[:,'headshotKills_cv'] = test.loc[:,'headshotKills_std']/(test.loc[:,'headshotKills_avg']+1)
+test.loc[:,'killStreaks_cv'] = test.loc[:,'killStreaks_std']/(test.loc[:,'killStreaks_avg']+1)
+test.loc[:,'longestKill_cv'] = test.loc[:,'longestKill_std']/(test.loc[:,'longestKill_avg']+1)
+test.loc[:,'rideDistance_cv'] = test.loc[:,'rideDistance_std']/(test.loc[:,'rideDistance_avg']+1)
+
+test = test.fillna(0)
+
+
+
+
+
+print('Making rank features: test.....')
+
+test.loc[:,'killPlace_rank'] = test.groupby('groupId')['killPlace'].rank(ascending=0,method='dense')
+test.loc[:,'walkDistance_rank'] = test.groupby('groupId')['walkDistance'].rank(ascending=0,method='dense')
+test.loc[:,'weaponsAcquired_rank'] = test.groupby('groupId')['weaponsAcquired'].rank(ascending=0,method='dense')
+test.loc[:,'boosts_rank'] = test.groupby('groupId')['boosts'].rank(ascending=0,method='dense')
+test.loc[:,'heals_rank'] = test.groupby('groupId')['heals'].rank(ascending=0,method='dense')
+test.loc[:,'assists_rank'] = test.groupby('groupId')['assists'].rank(ascending=0,method='dense')
+test.loc[:,'revives_rank'] = test.groupby('groupId')['revives'].rank(ascending=0,method='dense')
+test.loc[:,'kills_rank'] = test.groupby('groupId')['kills'].rank(ascending=0,method='dense')
+test.loc[:,'damageDealt_rank'] = test.groupby('groupId')['damageDealt'].rank(ascending=0,method='dense')
+test.loc[:,'DBNOs_rank'] = test.groupby('groupId')['DBNOs'].rank(ascending=0,method='dense')
+test.loc[:,'headshotKills_rank'] = test.groupby('groupId')['headshotKills'].rank(ascending=0,method='dense')
+test.loc[:,'killStreaks_rank'] = test.groupby('groupId')['killStreaks'].rank(ascending=0,method='dense')
+test.loc[:,'longestKill_rank'] = test.groupby('groupId')['longestKill'].rank(ascending=0,method='dense')
+test.loc[:,'rideDistance_rank'] = test.groupby('groupId')['rideDistance'].rank(ascending=0,method='dense')
+
+
+test.loc[:,'totDistance_rank'] = test.groupby('groupId')['totDistance'].rank(ascending=0,method='dense')
+test.loc[:,'avgSpeed1_rank'] = test.groupby('groupId')['avgSpeed1'].rank(ascending=0,method='dense')
+test.loc[:,'avgSpeed2_rank'] = test.groupby('groupId')['avgSpeed2'].rank(ascending=0,method='dense')
+test.loc[:,'healsBoosts_rank'] = test.groupby('groupId')['healsBoosts'].rank(ascending=0,method='dense')
+
+
+test.loc[:,'killPlace_rankp'] = test.groupby('groupId')['killPlace'].rank(pct=True)
+test.loc[:,'walkDistance_rankp'] = test.groupby('groupId')['walkDistance'].rank(pct=True)
+test.loc[:,'weaponsAcquired_rankp'] = test.groupby('groupId')['weaponsAcquired'].rank(pct=True)
+test.loc[:,'boosts_rankp'] = test.groupby('groupId')['boosts'].rank(pct=True)
+test.loc[:,'heals_rankp'] = test.groupby('groupId')['heals'].rank(pct=True)
+test.loc[:,'assists_rankp'] = test.groupby('groupId')['assists'].rank(pct=True)
+test.loc[:,'revives_rankp'] = test.groupby('groupId')['revives'].rank(pct=True)
+test.loc[:,'kills_rankp'] = test.groupby('groupId')['kills'].rank(pct=True)
+test.loc[:,'damageDealt_rankp'] = test.groupby('groupId')['damageDealt'].rank(pct=True)
+test.loc[:,'DBNOs_rankp'] = test.groupby('groupId')['DBNOs'].rank(pct=True)
+test.loc[:,'headshotKills_rankp'] = test.groupby('groupId')['headshotKills'].rank(pct=True)
+test.loc[:,'killStreaks_rankp'] = test.groupby('groupId')['killStreaks'].rank(pct=True)
+test.loc[:,'longestKill_rankp'] = test.groupby('groupId')['longestKill'].rank(pct=True)
+test.loc[:,'rideDistance_rankp'] = test.groupby('groupId')['rideDistance'].rank(pct=True)
+
+test.loc[:,'totDistance_rankp'] = test.groupby('groupId')['totDistance'].rank(pct=True)
+test.loc[:,'avgSpeed1_rankp'] = test.groupby('groupId')['avgSpeed1'].rank(pct=True)
+test.loc[:,'avgSpeed2_rankp'] = test.groupby('groupId')['avgSpeed2'].rank(pct=True)
+test.loc[:,'healsBoosts_rankp'] = test.groupby('groupId')['healsBoosts'].rank(pct=True)
+
+
+
+
+#Match Features test
+#test.loc[:,'killPlace_sum1'] = test.groupby('matchId')['killPlace'].transform('sum')
+#test.loc[:,'walkDistance_sum1'] = test.groupby('matchId')['walkDistance'].transform('sum')
+#test.loc[:,'weaponsAcquired_sum1'] = test.groupby('matchId')['weaponsAcquired'].transform('sum')
+#test.loc[:,'boosts_sum1'] = test.groupby('matchId')['boosts'].transform('sum')
+#test.loc[:,'heals_sum1'] = test.groupby('matchId')['heals'].transform('sum')
+#test.loc[:,'assists_sum1'] = test.groupby('matchId')['assists'].transform('sum')
+#test.loc[:,'revives_sum1'] = test.groupby('matchId')['revives'].transform('sum')
+#test.loc[:,'kills_sum1'] = test.groupby('matchId')['kills'].transform('sum')
+#test.loc[:,'damageDealt_sum1'] = test.groupby('matchId')['damageDealt'].transform('sum')
+#test.loc[:,'DBNOs_sum1'] = test.groupby('matchId')['DBNOs'].transform('sum')
+#test.loc[:,'headshotKills_sum1'] = test.groupby('matchId')['headshotKills'].transform('sum')
+#test.loc[:,'killStreaks_sum1'] = test.groupby('matchId')['killStreaks'].transform('sum')
+#test.loc[:,'longestKill_sum1'] = test.groupby('matchId')['longestKill'].transform('sum')
+#test.loc[:,'rideDistance_sum1'] = test.groupby('matchId')['rideDistance'].transform('sum')
+
+#test.loc[:,'killPlace_avg1'] = test.groupby('matchId')['killPlace'].transform('mean')
+#test.loc[:,'killPlace_max1'] = test.groupby('matchId')['killPlace'].transform('max')
+#test.loc[:,'killPlace_min1'] = test.groupby('matchId')['killPlace'].transform('min')
+
+#test.loc[:,'walkDistance_avg1'] = test.groupby('matchId')['walkDistance'].transform('mean')
+#test.loc[:,'walkDistance_max1'] = test.groupby('matchId')['walkDistance'].transform('max')
+#test.loc[:,'walkDistance_min1'] = test.groupby('matchId')['walkDistance'].transform('min')
+
+#test.loc[:,'weaponsAcquired_avg1'] = test.groupby('matchId')['weaponsAcquired'].transform('mean')
+#test.loc[:,'weaponsAcquired_max1'] = test.groupby('matchId')['weaponsAcquired'].transform('max')
+#test.loc[:,'weaponsAcquired_min1'] = test.groupby('matchId')['weaponsAcquired'].transform('min')
+
+#test.loc[:,'boosts_avg1'] = test.groupby('matchId')['boosts'].transform('mean')
+#test.loc[:,'boosts_max1'] = test.groupby('matchId')['boosts'].transform('max')
+#test.loc[:,'boosts_min1'] = test.groupby('matchId')['boosts'].transform('min')
+
+#test.loc[:,'heals_avg1'] = test.groupby('matchId')['heals'].transform('mean')
+#test.loc[:,'heals_max1'] = test.groupby('matchId')['heals'].transform('max')
+#test.loc[:,'heals_min1'] = test.groupby('matchId')['heals'].transform('min')
+
+#test.loc[:,'assists_avg1'] = test.groupby('matchId')['assists'].transform('mean')
+#test.loc[:,'assists_max1'] = test.groupby('matchId')['assists'].transform('max')
+#test.loc[:,'assists_min1'] = test.groupby('matchId')['assists'].transform('min')
+
+#test.loc[:,'revives_avg1'] = test.groupby('matchId')['revives'].transform('mean')
+#test.loc[:,'revives_max1'] = test.groupby('matchId')['revives'].transform('max')
+#test.loc[:,'revives_min1'] = test.groupby('matchId')['revives'].transform('min')
+
+#test.loc[:,'kills_avg1'] = test.groupby('matchId')['kills'].transform('mean')
+#test.loc[:,'kills_max1'] = test.groupby('matchId')['kills'].transform('max')
+#test.loc[:,'kills_min1'] = test.groupby('matchId')['kills'].transform('min')
+
+#test.loc[:,'damageDealt_avg1'] = test.groupby('matchId')['damageDealt'].transform('mean')
+#test.loc[:,'damageDealt_max1'] = test.groupby('matchId')['damageDealt'].transform('max')
+#test.loc[:,'damageDealt_min1'] = test.groupby('matchId')['damageDealt'].transform('min')
+
+#test.loc[:,'DBNOs_avg1'] = test.groupby('matchId')['DBNOs'].transform('mean')
+#test.loc[:,'DBNOs_max1'] = test.groupby('matchId')['DBNOs'].transform('max')
+#test.loc[:,'DBNOs_min1'] = test.groupby('matchId')['DBNOs'].transform('min')
+
+#test.loc[:,'headshotKills_avg1'] = test.groupby('matchId')['headshotKills'].transform('mean')
+#test.loc[:,'headshotKills_max1'] = test.groupby('matchId')['headshotKills'].transform('max')
+#test.loc[:,'headshotKills_min1'] = test.groupby('matchId')['headshotKills'].transform('min')
+
+#test.loc[:,'killStreaks_avg1'] = test.groupby('matchId')['killStreaks'].transform('mean')
+#test.loc[:,'killStreaks_max1'] = test.groupby('matchId')['killStreaks'].transform('max')
+#test.loc[:,'killStreaks_min1'] = test.groupby('matchId')['killStreaks'].transform('min')
+
+#test.loc[:,'longestKill_avg1'] = test.groupby('matchId')['longestKill'].transform('mean')
+#test.loc[:,'longestKill_max1'] = test.groupby('matchId')['longestKill'].transform('max')
+#test.loc[:,'longestKill_min1'] = test.groupby('matchId')['longestKill'].transform('min')
+
+#test.loc[:,'roadKills_avg1'] = test.groupby('matchId')['roadKills'].transform('mean')
+#test.loc[:,'roadKills_max1'] = test.groupby('matchId')['roadKills'].transform('max')
+#test.loc[:,'roadKills_min1'] = test.groupby('matchId')['roadKills'].transform('min')
+
+#test.loc[:,'teamKills_avg1'] = test.groupby('matchId')['teamKills'].transform('mean')
+#test.loc[:,'teamKills_max1'] = test.groupby('matchId')['teamKills'].transform('max')
+#test.loc[:,'teamKills_min1'] = test.groupby('matchId')['teamKills'].transform('min')
+
+#test.loc[:,'vehicleDestroys_avg1'] = test.groupby('matchId')['vehicleDestroys'].transform('mean')
+#test.loc[:,'vehicleDestroys_max1'] = test.groupby('matchId')['vehicleDestroys'].transform('max')
+#test.loc[:,'vehicleDestroys_min1'] = test.groupby('matchId')['vehicleDestroys'].transform('min')
+
+#test.loc[:,'rideDistance_avg1'] = test.groupby('matchId')['rideDistance'].transform('mean')
+#test.loc[:,'rideDistance_max1'] = test.groupby('matchId')['rideDistance'].transform('max')
+#test.loc[:,'rideDistance_min1'] = test.groupby('matchId')['rideDistance'].transform('min')
+
+
+
+test.loc[:,'killPlace_rank1'] = test.groupby('matchId')['killPlace'].rank(ascending=0,method='dense')
+test.loc[:,'walkDistance_rank1'] = test.groupby('matchId')['walkDistance'].rank(ascending=0,method='dense')
+test.loc[:,'weaponsAcquired_rank1'] = test.groupby('matchId')['weaponsAcquired'].rank(ascending=0,method='dense')
+test.loc[:,'boosts_rank1'] = test.groupby('matchId')['boosts'].rank(ascending=0,method='dense')
+test.loc[:,'heals_rank1'] = test.groupby('matchId')['heals'].rank(ascending=0,method='dense')
+test.loc[:,'assists_rank1'] = test.groupby('matchId')['assists'].rank(ascending=0,method='dense')
+test.loc[:,'revives_rank1'] = test.groupby('matchId')['revives'].rank(ascending=0,method='dense')
+test.loc[:,'kills_rank1'] = test.groupby('matchId')['kills'].rank(ascending=0,method='dense')
+test.loc[:,'damageDealt_rank1'] = test.groupby('matchId')['damageDealt'].rank(ascending=0,method='dense')
+test.loc[:,'DBNOs_rank1'] = test.groupby('matchId')['DBNOs'].rank(ascending=0,method='dense')
+test.loc[:,'headshotKills_rank1'] = test.groupby('matchId')['headshotKills'].rank(ascending=0,method='dense')
+test.loc[:,'killStreaks_rank1'] = test.groupby('matchId')['killStreaks'].rank(ascending=0,method='dense')
+test.loc[:,'longestKill_rank1'] = test.groupby('matchId')['longestKill'].rank(ascending=0,method='dense')
+test.loc[:,'rideDistance_rank1'] = test.groupby('matchId')['rideDistance'].rank(ascending=0,method='dense')
+
+
+
+test.loc[:,'totDistance_rank1'] = test.groupby('matchId')['totDistance'].rank(ascending=0,method='dense')
+test.loc[:,'avgSpeed1_rank1'] = test.groupby('matchId')['avgSpeed1'].rank(ascending=0,method='dense')
+test.loc[:,'avgSpeed2_rank1'] = test.groupby('matchId')['avgSpeed2'].rank(ascending=0,method='dense')
+test.loc[:,'healsBoosts_rank1'] = test.groupby('matchId')['healsBoosts'].rank(ascending=0,method='dense')
+
+
+
+
+test.loc[:,'killPlace_rankp1'] = test.groupby('matchId')['killPlace'].rank(pct=True)
+test.loc[:,'walkDistance_rankp1'] = test.groupby('matchId')['walkDistance'].rank(pct=True)
+test.loc[:,'weaponsAcquired_rankp1'] = test.groupby('matchId')['weaponsAcquired'].rank(pct=True)
+test.loc[:,'boosts_rankp1'] = test.groupby('matchId')['boosts'].rank(pct=True)
+test.loc[:,'heals_rankp1'] = test.groupby('matchId')['heals'].rank(pct=True)
+test.loc[:,'assists_rankp1'] = test.groupby('matchId')['assists'].rank(pct=True)
+test.loc[:,'revives_rankp1'] = test.groupby('matchId')['revives'].rank(pct=True)
+test.loc[:,'kills_rankp1'] = test.groupby('matchId')['kills'].rank(pct=True)
+test.loc[:,'damageDealt_rankp1'] = test.groupby('matchId')['damageDealt'].rank(pct=True)
+test.loc[:,'DBNOs_rankp1'] = test.groupby('matchId')['DBNOs'].rank(pct=True)
+test.loc[:,'headshotKills_rankp1'] = test.groupby('matchId')['headshotKills'].rank(pct=True)
+test.loc[:,'killStreaks_rankp1'] = test.groupby('matchId')['killStreaks'].rank(pct=True)
+test.loc[:,'longestKill_rankp1'] = test.groupby('matchId')['longestKill'].rank(pct=True)
+test.loc[:,'rideDistance_rankp1'] = test.groupby('matchId')['rideDistance'].rank(pct=True)
+
+
+
+
+test.loc[:,'totDistance_rankp1'] = test.groupby('matchId')['totDistance'].rank(pct=True)
+test.loc[:,'avgSpeed1_rankp1'] = test.groupby('matchId')['avgSpeed1'].rank(pct=True)
+test.loc[:,'avgSpeed2_rankp1'] = test.groupby('matchId')['avgSpeed2'].rank(pct=True)
+test.loc[:,'healsBoosts_rankp1'] = test.groupby('matchId')['healsBoosts'].rank(pct=True)
+
+
+
+test = reduce_mem_usage(test)
+
+
+#Group Features train
+print('Making train features....')
+
+train.loc[:,'killPlace_avg'] = train.groupby('groupId')['killPlace'].transform('mean')
+train.loc[:,'killPlace_max'] = train.groupby('groupId')['killPlace'].transform('max')
+train.loc[:,'killPlace_min'] = train.groupby('groupId')['killPlace'].transform('min')
+
+train.loc[:,'walkDistance_avg'] = train.groupby('groupId')['walkDistance'].transform('mean')
+train.loc[:,'walkDistance_max'] = train.groupby('groupId')['walkDistance'].transform('max')
+train.loc[:,'walkDistance_min'] = train.groupby('groupId')['walkDistance'].transform('min')
+
+train.loc[:,'weaponsAcquired_avg'] = train.groupby('groupId')['weaponsAcquired'].transform('mean')
+train.loc[:,'weaponsAcquired_max'] = train.groupby('groupId')['weaponsAcquired'].transform('max')
+train.loc[:,'weaponsAcquired_min'] = train.groupby('groupId')['weaponsAcquired'].transform('min')
+
+train.loc[:,'boosts_avg'] = train.groupby('groupId')['boosts'].transform('mean')
+train.loc[:,'boosts_max'] = train.groupby('groupId')['boosts'].transform('max')
+train.loc[:,'boosts_min'] = train.groupby('groupId')['boosts'].transform('min')
+
+train.loc[:,'heals_avg'] = train.groupby('groupId')['heals'].transform('mean')
+train.loc[:,'heals_max'] = train.groupby('groupId')['heals'].transform('max')
+train.loc[:,'heals_min'] = train.groupby('groupId')['heals'].transform('min')
+
+train.loc[:,'assists_avg'] = train.groupby('groupId')['assists'].transform('mean')
+train.loc[:,'assists_max'] = train.groupby('groupId')['assists'].transform('max')
+train.loc[:,'assists_min'] = train.groupby('groupId')['assists'].transform('min')
+
+train.loc[:,'revives_avg'] = train.groupby('groupId')['revives'].transform('mean')
+train.loc[:,'revives_max'] = train.groupby('groupId')['revives'].transform('max')
+train.loc[:,'revives_min'] = train.groupby('groupId')['revives'].transform('min')
+
+train.loc[:,'kills_avg'] = train.groupby('groupId')['kills'].transform('mean')
+train.loc[:,'kills_max'] = train.groupby('groupId')['kills'].transform('max')
+train.loc[:,'kills_min'] = train.groupby('groupId')['kills'].transform('min')
+
+train.loc[:,'damageDealt_avg'] = train.groupby('groupId')['damageDealt'].transform('mean')
+train.loc[:,'damageDealt_max'] = train.groupby('groupId')['damageDealt'].transform('max')
+train.loc[:,'damageDealt_min'] = train.groupby('groupId')['damageDealt'].transform('min')
+
+train.loc[:,'DBNOs_avg'] = train.groupby('groupId')['DBNOs'].transform('mean')
+train.loc[:,'DBNOs_max'] = train.groupby('groupId')['DBNOs'].transform('max')
+train.loc[:,'DBNOs_min'] = train.groupby('groupId')['DBNOs'].transform('min')
+
+train.loc[:,'headshotKills_avg'] = train.groupby('groupId')['headshotKills'].transform('mean')
+train.loc[:,'headshotKills_max'] = train.groupby('groupId')['headshotKills'].transform('max')
+train.loc[:,'headshotKills_min'] = train.groupby('groupId')['headshotKills'].transform('min')
+
+train.loc[:,'killStreaks_avg'] = train.groupby('groupId')['killStreaks'].transform('mean')
+train.loc[:,'killStreaks_max'] = train.groupby('groupId')['killStreaks'].transform('max')
+train.loc[:,'killStreaks_min'] = train.groupby('groupId')['killStreaks'].transform('min')
+
+train.loc[:,'longestKill_avg'] = train.groupby('groupId')['longestKill'].transform('mean')
+train.loc[:,'longestKill_max'] = train.groupby('groupId')['longestKill'].transform('max')
+train.loc[:,'longestKill_min'] = train.groupby('groupId')['longestKill'].transform('min')
+
+train.loc[:,'roadKills_avg'] = train.groupby('groupId')['roadKills'].transform('mean')
+train.loc[:,'roadKills_max'] = train.groupby('groupId')['roadKills'].transform('max')
+train.loc[:,'roadKills_min'] = train.groupby('groupId')['roadKills'].transform('min')
+
+train.loc[:,'teamKills_avg'] = train.groupby('groupId')['teamKills'].transform('mean')
+train.loc[:,'teamKills_max'] = train.groupby('groupId')['teamKills'].transform('max')
+train.loc[:,'teamKills_min'] = train.groupby('groupId')['teamKills'].transform('min')
+
+train.loc[:,'vehicleDestroys_avg'] = train.groupby('groupId')['vehicleDestroys'].transform('mean')
+train.loc[:,'vehicleDestroys_max'] = train.groupby('groupId')['vehicleDestroys'].transform('max')
+train.loc[:,'vehicleDestroys_min'] = train.groupby('groupId')['vehicleDestroys'].transform('min')
+
+train.loc[:,'rideDistance_avg'] = train.groupby('groupId')['rideDistance'].transform('mean')
+train.loc[:,'rideDistance_max'] = train.groupby('groupId')['rideDistance'].transform('max')
+train.loc[:,'rideDistance_min'] = train.groupby('groupId')['rideDistance'].transform('min')
+
+
+train.loc[:,'killPlace_sum'] = train.groupby('groupId')['killPlace'].transform('sum')
+train.loc[:,'walkDistance_sum'] = train.groupby('groupId')['walkDistance'].transform('sum')
+train.loc[:,'weaponsAcquired_sum'] = train.groupby('groupId')['weaponsAcquired'].transform('sum')
+train.loc[:,'boosts_sum'] = train.groupby('groupId')['boosts'].transform('sum')
+train.loc[:,'heals_sum'] = train.groupby('groupId')['heals'].transform('sum')
+train.loc[:,'assists_sum'] = train.groupby('groupId')['assists'].transform('sum')
+train.loc[:,'revives_sum'] = train.groupby('groupId')['revives'].transform('sum')
+train.loc[:,'kills_sum'] = train.groupby('groupId')['kills'].transform('sum')
+train.loc[:,'damageDealt_sum'] = train.groupby('groupId')['damageDealt'].transform('sum')
+train.loc[:,'DBNOs_sum'] = train.groupby('groupId')['DBNOs'].transform('sum')
+train.loc[:,'headshotKills_sum'] = train.groupby('groupId')['headshotKills'].transform('sum')
+train.loc[:,'killStreaks_sum'] = train.groupby('groupId')['killStreaks'].transform('sum')
+train.loc[:,'longestKill_sum'] = train.groupby('groupId')['longestKill'].transform('sum')
+train.loc[:,'rideDistance_sum'] = train.groupby('groupId')['rideDistance'].transform('sum')
+
+
+train.loc[:,'killPlace_var'] = train.groupby('groupId')['killPlace'].transform('var')
+train.loc[:,'walkDistance_var'] = train.groupby('groupId')['walkDistance'].transform('var')
+train.loc[:,'weaponsAcquired_var'] = train.groupby('groupId')['weaponsAcquired'].transform('var')
+train.loc[:,'boosts_var'] = train.groupby('groupId')['boosts'].transform('var')
+train.loc[:,'heals_var'] = train.groupby('groupId')['heals'].transform('var')
+train.loc[:,'assists_var'] = train.groupby('groupId')['assists'].transform('var')
+train.loc[:,'revives_var'] = train.groupby('groupId')['revives'].transform('var')
+train.loc[:,'kills_var'] = train.groupby('groupId')['kills'].transform('var')
+train.loc[:,'damageDealt_var'] = train.groupby('groupId')['damageDealt'].transform('var')
+train.loc[:,'DBNOs_var'] = train.groupby('groupId')['DBNOs'].transform('var')
+train.loc[:,'headshotKills_var'] = train.groupby('groupId')['headshotKills'].transform('var')
+train.loc[:,'killStreaks_var'] = train.groupby('groupId')['killStreaks'].transform('var')
+train.loc[:,'longestKill_var'] = train.groupby('groupId')['longestKill'].transform('var')
+train.loc[:,'rideDistance_var'] = train.groupby('groupId')['rideDistance'].transform('var')
+
+
+
+train.loc[:,'killPlace_std'] = train.groupby('groupId')['killPlace'].transform('std')
+train.loc[:,'walkDistance_std'] = train.groupby('groupId')['walkDistance'].transform('std')
+train.loc[:,'weaponsAcquired_std'] = train.groupby('groupId')['weaponsAcquired'].transform('std')
+train.loc[:,'boosts_std'] = train.groupby('groupId')['boosts'].transform('std')
+train.loc[:,'heals_std'] = train.groupby('groupId')['heals'].transform('std')
+train.loc[:,'assists_std'] = train.groupby('groupId')['assists'].transform('std')
+train.loc[:,'revives_std'] = train.groupby('groupId')['revives'].transform('std')
+train.loc[:,'kills_std'] = train.groupby('groupId')['kills'].transform('std')
+train.loc[:,'damageDealt_std'] = train.groupby('groupId')['damageDealt'].transform('std')
+train.loc[:,'DBNOs_std'] = train.groupby('groupId')['DBNOs'].transform('std')
+train.loc[:,'headshotKills_std'] = train.groupby('groupId')['headshotKills'].transform('std')
+train.loc[:,'killStreaks_std'] = train.groupby('groupId')['killStreaks'].transform('std')
+train.loc[:,'longestKill_std'] = train.groupby('groupId')['longestKill'].transform('std')
+train.loc[:,'rideDistance_std'] = train.groupby('groupId')['rideDistance'].transform('std')
+
+
+train = train.fillna(0)
+
+
+train.loc[:,'killPlace_cv'] = train.loc[:,'killPlace_std']/(train.loc[:,'killPlace_avg']+1)
+train.loc[:,'walkDistance_cv'] = train.loc[:,'walkDistance_std']/(train.loc[:,'walkDistance_avg']+1)
+train.loc[:,'weaponsAcquired_cv'] = train.loc[:,'weaponsAcquired_std']/(train.loc[:,'weaponsAcquired_avg']+1)
+train.loc[:,'boosts_cv'] = train.loc[:,'boosts_std']/(train.loc[:,'boosts_avg']+1)
+train.loc[:,'heals_cv'] = train.loc[:,'heals_std']/(train.loc[:,'heals_avg']+1)
+train.loc[:,'assists_cv'] = train.loc[:,'assists_std']/(train.loc[:,'assists_avg']+1)
+train.loc[:,'revives_cv'] = train.loc[:,'revives_std']/(train.loc[:,'revives_avg']+1)
+train.loc[:,'kills_cv'] = train.loc[:,'kills_std']/(train.loc[:,'kills_avg']+1)
+train.loc[:,'damageDealt_cv'] = train.loc[:,'damageDealt_std']/(train.loc[:,'damageDealt_avg']+1)
+train.loc[:,'DBNOs_cv'] = train.loc[:,'DBNOs_std']/(train.loc[:,'DBNOs_avg']+1)
+train.loc[:,'headshotKills_cv'] = train.loc[:,'headshotKills_std']/(train.loc[:,'headshotKills_avg']+1)
+train.loc[:,'killStreaks_cv'] = train.loc[:,'killStreaks_std']/(train.loc[:,'killStreaks_avg']+1)
+train.loc[:,'longestKill_cv'] = train.loc[:,'longestKill_std']/(train.loc[:,'longestKill_avg']+1)
+train.loc[:,'rideDistance_cv'] = train.loc[:,'rideDistance_std']/(train.loc[:,'rideDistance_avg']+1)
+
+train = train.fillna(0)
+
+
+
+
+
+
+print('Making rank features: train.....')
+
+train.loc[:,'killPlace_rank'] = train.groupby('groupId')['killPlace'].rank(ascending=0,method='dense')
+train.loc[:,'walkDistance_rank'] = train.groupby('groupId')['walkDistance'].rank(ascending=0,method='dense')
+train.loc[:,'weaponsAcquired_rank'] = train.groupby('groupId')['weaponsAcquired'].rank(ascending=0,method='dense')
+train.loc[:,'boosts_rank'] = train.groupby('groupId')['boosts'].rank(ascending=0,method='dense')
+train.loc[:,'heals_rank'] = train.groupby('groupId')['heals'].rank(ascending=0,method='dense')
+train.loc[:,'assists_rank'] = train.groupby('groupId')['assists'].rank(ascending=0,method='dense')
+train.loc[:,'revives_rank'] = train.groupby('groupId')['revives'].rank(ascending=0,method='dense')
+train.loc[:,'kills_rank'] = train.groupby('groupId')['kills'].rank(ascending=0,method='dense')
+train.loc[:,'damageDealt_rank'] = train.groupby('groupId')['damageDealt'].rank(ascending=0,method='dense')
+train.loc[:,'DBNOs_rank'] = train.groupby('groupId')['DBNOs'].rank(ascending=0,method='dense')
+train.loc[:,'headshotKills_rank'] = train.groupby('groupId')['headshotKills'].rank(ascending=0,method='dense')
+train.loc[:,'killStreaks_rank'] = train.groupby('groupId')['killStreaks'].rank(ascending=0,method='dense')
+train.loc[:,'longestKill_rank'] = train.groupby('groupId')['longestKill'].rank(ascending=0,method='dense')
+train.loc[:,'rideDistance_rank'] = train.groupby('groupId')['rideDistance'].rank(ascending=0,method='dense')
+
+
+train.loc[:,'totDistance_rank'] = train.groupby('groupId')['totDistance'].rank(ascending=0,method='dense')
+train.loc[:,'avgSpeed1_rank'] = train.groupby('groupId')['avgSpeed1'].rank(ascending=0,method='dense')
+train.loc[:,'avgSpeed2_rank'] = train.groupby('groupId')['avgSpeed2'].rank(ascending=0,method='dense')
+train.loc[:,'healsBoosts_rank'] = train.groupby('groupId')['healsBoosts'].rank(ascending=0,method='dense')
+
+
+train.loc[:,'killPlace_rankp'] = train.groupby('groupId')['killPlace'].rank(pct=True)
+train.loc[:,'walkDistance_rankp'] = train.groupby('groupId')['walkDistance'].rank(pct=True)
+train.loc[:,'weaponsAcquired_rankp'] = train.groupby('groupId')['weaponsAcquired'].rank(pct=True)
+train.loc[:,'boosts_rankp'] = train.groupby('groupId')['boosts'].rank(pct=True)
+train.loc[:,'heals_rankp'] = train.groupby('groupId')['heals'].rank(pct=True)
+train.loc[:,'assists_rankp'] = train.groupby('groupId')['assists'].rank(pct=True)
+train.loc[:,'revives_rankp'] = train.groupby('groupId')['revives'].rank(pct=True)
+train.loc[:,'kills_rankp'] = train.groupby('groupId')['kills'].rank(pct=True)
+train.loc[:,'damageDealt_rankp'] = train.groupby('groupId')['damageDealt'].rank(pct=True)
+train.loc[:,'DBNOs_rankp'] = train.groupby('groupId')['DBNOs'].rank(pct=True)
+train.loc[:,'headshotKills_rankp'] = train.groupby('groupId')['headshotKills'].rank(pct=True)
+train.loc[:,'killStreaks_rankp'] = train.groupby('groupId')['killStreaks'].rank(pct=True)
+train.loc[:,'longestKill_rankp'] = train.groupby('groupId')['longestKill'].rank(pct=True)
+train.loc[:,'rideDistance_rankp'] = train.groupby('groupId')['rideDistance'].rank(pct=True)
+
+train.loc[:,'totDistance_rankp'] = train.groupby('groupId')['totDistance'].rank(pct=True)
+train.loc[:,'avgSpeed1_rankp'] = train.groupby('groupId')['avgSpeed1'].rank(pct=True)
+train.loc[:,'avgSpeed2_rankp'] = train.groupby('groupId')['avgSpeed2'].rank(pct=True)
+train.loc[:,'healsBoosts_rankp'] = train.groupby('groupId')['healsBoosts'].rank(pct=True)
+
+
+
+
+#Match Features train
+#train.loc[:,'killPlace_sum1'] = train.groupby('matchId')['killPlace'].transform('sum')
+#train.loc[:,'walkDistance_sum1'] = train.groupby('matchId')['walkDistance'].transform('sum')
+#train.loc[:,'weaponsAcquired_sum1'] = train.groupby('matchId')['weaponsAcquired'].transform('sum')
+#train.loc[:,'boosts_sum1'] = train.groupby('matchId')['boosts'].transform('sum')
+#rain.loc[:,'heals_sum1'] = train.groupby('matchId')['heals'].transform('sum')
+#train.loc[:,'assists_sum1'] = train.groupby('matchId')['assists'].transform('sum')
+#train.loc[:,'revives_sum1'] = train.groupby('matchId')['revives'].transform('sum')
+#train.loc[:,'kills_sum1'] = train.groupby('matchId')['kills'].transform('sum')
+#rain.loc[:,'damageDealt_sum1'] = train.groupby('matchId')['damageDealt'].transform('sum')
+#train.loc[:,'DBNOs_sum1'] = train.groupby('matchId')['DBNOs'].transform('sum')
+#train.loc[:,'headshotKills_sum1'] = train.groupby('matchId')['headshotKills'].transform('sum')
+#train.loc[:,'killStreaks_sum1'] = train.groupby('matchId')['killStreaks'].transform('sum')
+#train.loc[:,'longestKill_sum1'] = train.groupby('matchId')['longestKill'].transform('sum')
+#train.loc[:,'rideDistance_sum1'] = train.groupby('matchId')['rideDistance'].transform('sum')
+
+#train.loc[:,'killPlace_avg1'] = train.groupby('matchId')['killPlace'].transform('mean')
+#train.loc[:,'killPlace_max1'] = train.groupby('matchId')['killPlace'].transform('max')
+#train.loc[:,'killPlace_min1'] = train.groupby('matchId')['killPlace'].transform('min')
+
+#train.loc[:,'walkDistance_avg1'] = train.groupby('matchId')['walkDistance'].transform('mean')
+#train.loc[:,'walkDistance_max1'] = train.groupby('matchId')['walkDistance'].transform('max')
+#train.loc[:,'walkDistance_min1'] = train.groupby('matchId')['walkDistance'].transform('min')
+
+#train.loc[:,'weaponsAcquired_avg1'] = train.groupby('matchId')['weaponsAcquired'].transform('mean')
+#train.loc[:,'weaponsAcquired_max1'] = train.groupby('matchId')['weaponsAcquired'].transform('max')
+#train.loc[:,'weaponsAcquired_min1'] = train.groupby('matchId')['weaponsAcquired'].transform('min')
+
+#train.loc[:,'boosts_avg1'] = train.groupby('matchId')['boosts'].transform('mean')
+#train.loc[:,'boosts_max1'] = train.groupby('matchId')['boosts'].transform('max')
+#train.loc[:,'boosts_min1'] = train.groupby('matchId')['boosts'].transform('min')
+
+#train.loc[:,'heals_avg1'] = train.groupby('matchId')['heals'].transform('mean')
+#train.loc[:,'heals_max1'] = train.groupby('matchId')['heals'].transform('max')
+#train.loc[:,'heals_min1'] = train.groupby('matchId')['heals'].transform('min')
+
+#train.loc[:,'assists_avg1'] = train.groupby('matchId')['assists'].transform('mean')
+#train.loc[:,'assists_max1'] = train.groupby('matchId')['assists'].transform('max')
+#train.loc[:,'assists_min1'] = train.groupby('matchId')['assists'].transform('min')
+
+#train.loc[:,'revives_avg1'] = train.groupby('matchId')['revives'].transform('mean')
+#train.loc[:,'revives_max1'] = train.groupby('matchId')['revives'].transform('max')
+#train.loc[:,'revives_min1'] = train.groupby('matchId')['revives'].transform('min')
+
+#train.loc[:,'kills_avg1'] = train.groupby('matchId')['kills'].transform('mean')
+#train.loc[:,'kills_max1'] = train.groupby('matchId')['kills'].transform('max')
+#train.loc[:,'kills_min1'] = train.groupby('matchId')['kills'].transform('min')
+
+#train.loc[:,'damageDealt_avg1'] = train.groupby('matchId')['damageDealt'].transform('mean')
+#train.loc[:,'damageDealt_max1'] = train.groupby('matchId')['damageDealt'].transform('max')
+#train.loc[:,'damageDealt_min1'] = train.groupby('matchId')['damageDealt'].transform('min')
+
+#train.loc[:,'DBNOs_avg1'] = train.groupby('matchId')['DBNOs'].transform('mean')
+#train.loc[:,'DBNOs_max1'] = train.groupby('matchId')['DBNOs'].transform('max')
+#train.loc[:,'DBNOs_min1'] = train.groupby('matchId')['DBNOs'].transform('min')
+
+#train.loc[:,'headshotKills_avg1'] = train.groupby('matchId')['headshotKills'].transform('mean')
+#train.loc[:,'headshotKills_max1'] = train.groupby('matchId')['headshotKills'].transform('max')
+#train.loc[:,'headshotKills_min1'] = train.groupby('matchId')['headshotKills'].transform('min')
+
+#train.loc[:,'killStreaks_avg1'] = train.groupby('matchId')['killStreaks'].transform('mean')
+#train.loc[:,'killStreaks_max1'] = train.groupby('matchId')['killStreaks'].transform('max')
+#train.loc[:,'killStreaks_min1'] = train.groupby('matchId')['killStreaks'].transform('min')
+
+#train.loc[:,'longestKill_avg1'] = train.groupby('matchId')['longestKill'].transform('mean')
+#train.loc[:,'longestKill_max1'] = train.groupby('matchId')['longestKill'].transform('max')
+#train.loc[:,'longestKill_min1'] = train.groupby('matchId')['longestKill'].transform('min')
+
+#train.loc[:,'roadKills_avg1'] = train.groupby('matchId')['roadKills'].transform('mean')
+#train.loc[:,'roadKills_max1'] = train.groupby('matchId')['roadKills'].transform('max')
+#rain.loc[:,'roadKills_min1'] = train.groupby('matchId')['roadKills'].transform('min')
+
+#train.loc[:,'teamKills_avg1'] = train.groupby('matchId')['teamKills'].transform('mean')
+#train.loc[:,'teamKills_max1'] = train.groupby('matchId')['teamKills'].transform('max')
+#train.loc[:,'teamKills_min1'] = train.groupby('matchId')['teamKills'].transform('min')
+
+#train.loc[:,'vehicleDestroys_avg1'] = train.groupby('matchId')['vehicleDestroys'].transform('mean')
+#train.loc[:,'vehicleDestroys_max1'] = train.groupby('matchId')['vehicleDestroys'].transform('max')
+#train.loc[:,'vehicleDestroys_min1'] = train.groupby('matchId')['vehicleDestroys'].transform('min')
+
+#train.loc[:,'rideDistance_avg1'] = train.groupby('matchId')['rideDistance'].transform('mean')
+#train.loc[:,'rideDistance_max1'] = train.groupby('matchId')['rideDistance'].transform('max')
+#train.loc[:,'rideDistance_min1'] = train.groupby('matchId')['rideDistance'].transform('min')
+
+
+
+train.loc[:,'killPlace_rank1'] = train.groupby('matchId')['killPlace'].rank(ascending=0,method='dense')
+train.loc[:,'walkDistance_rank1'] = train.groupby('matchId')['walkDistance'].rank(ascending=0,method='dense')
+train.loc[:,'weaponsAcquired_rank1'] = train.groupby('matchId')['weaponsAcquired'].rank(ascending=0,method='dense')
+train.loc[:,'boosts_rank1'] = train.groupby('matchId')['boosts'].rank(ascending=0,method='dense')
+train.loc[:,'heals_rank1'] = train.groupby('matchId')['heals'].rank(ascending=0,method='dense')
+train.loc[:,'assists_rank1'] = train.groupby('matchId')['assists'].rank(ascending=0,method='dense')
+train.loc[:,'revives_rank1'] = train.groupby('matchId')['revives'].rank(ascending=0,method='dense')
+train.loc[:,'kills_rank1'] = train.groupby('matchId')['kills'].rank(ascending=0,method='dense')
+train.loc[:,'damageDealt_rank1'] = train.groupby('matchId')['damageDealt'].rank(ascending=0,method='dense')
+train.loc[:,'DBNOs_rank1'] = train.groupby('matchId')['DBNOs'].rank(ascending=0,method='dense')
+train.loc[:,'headshotKills_rank1'] = train.groupby('matchId')['headshotKills'].rank(ascending=0,method='dense')
+train.loc[:,'killStreaks_rank1'] = train.groupby('matchId')['killStreaks'].rank(ascending=0,method='dense')
+train.loc[:,'longestKill_rank1'] = train.groupby('matchId')['longestKill'].rank(ascending=0,method='dense')
+train.loc[:,'rideDistance_rank1'] = train.groupby('matchId')['rideDistance'].rank(ascending=0,method='dense')
+
+
+
+train.loc[:,'totDistance_rank1'] = train.groupby('matchId')['totDistance'].rank(ascending=0,method='dense')
+train.loc[:,'avgSpeed1_rank1'] = train.groupby('matchId')['avgSpeed1'].rank(ascending=0,method='dense')
+train.loc[:,'avgSpeed2_rank1'] = train.groupby('matchId')['avgSpeed2'].rank(ascending=0,method='dense')
+train.loc[:,'healsBoosts_rank1'] = train.groupby('matchId')['healsBoosts'].rank(ascending=0,method='dense')
+
+
+
+
+train.loc[:,'killPlace_rankp1'] = train.groupby('matchId')['killPlace'].rank(pct=True)
+train.loc[:,'walkDistance_rankp1'] = train.groupby('matchId')['walkDistance'].rank(pct=True)
+train.loc[:,'weaponsAcquired_rankp1'] = train.groupby('matchId')['weaponsAcquired'].rank(pct=True)
+train.loc[:,'boosts_rankp1'] = train.groupby('matchId')['boosts'].rank(pct=True)
+train.loc[:,'heals_rankp1'] = train.groupby('matchId')['heals'].rank(pct=True)
+train.loc[:,'assists_rankp1'] = train.groupby('matchId')['assists'].rank(pct=True)
+train.loc[:,'revives_rankp1'] = train.groupby('matchId')['revives'].rank(pct=True)
+train.loc[:,'kills_rankp1'] = train.groupby('matchId')['kills'].rank(pct=True)
+train.loc[:,'damageDealt_rankp1'] = train.groupby('matchId')['damageDealt'].rank(pct=True)
+train.loc[:,'DBNOs_rankp1'] = train.groupby('matchId')['DBNOs'].rank(pct=True)
+train.loc[:,'headshotKills_rankp1'] = train.groupby('matchId')['headshotKills'].rank(pct=True)
+train.loc[:,'killStreaks_rankp1'] = train.groupby('matchId')['killStreaks'].rank(pct=True)
+train.loc[:,'longestKill_rankp1'] = train.groupby('matchId')['longestKill'].rank(pct=True)
+train.loc[:,'rideDistance_rankp1'] = train.groupby('matchId')['rideDistance'].rank(pct=True)
+
+
+
+
+train.loc[:,'totDistance_rankp1'] = train.groupby('matchId')['totDistance'].rank(pct=True)
+train.loc[:,'avgSpeed1_rankp1'] = train.groupby('matchId')['avgSpeed1'].rank(pct=True)
+train.loc[:,'avgSpeed2_rankp1'] = train.groupby('matchId')['avgSpeed2'].rank(pct=True)
+train.loc[:,'healsBoosts_rankp1'] = train.groupby('matchId')['healsBoosts'].rank(pct=True)
+
+
+train = reduce_mem_usage(train)
+
+
+
+
+end = time.time()
+print(end-start)
+
+print(train.columns); print(test.columns)
+
+#import matplotlib.pyplot as plt
+#import matplotlib as mpl
+#import seaborn as sns 
+#import warnings
+#warnings.filterwarnings("ignore")
+
+#f,ax = plt.subplots(figsize=(25, 25))
+#sns.heatmap(train.corr(), annot=True, linewidths=.5, fmt= '.1f',ax=ax)
+#plt.show()
+
+#train.describe()
+
+
+train = train.replace([np.inf, -np.inf], np.nan)
+test = test.replace([np.inf, -np.inf], np.nan)
+
+
+train = train.fillna(0)
+test = test.fillna(0)
+
+
+
+print('model training started')
+
+#Splitting train into x and y
+y = train.loc[:,'winPlacePerc']
+X = train.iloc[:,3:]
+del X['winPlacePerc']
+
+
+
+
+#Splitting train into train and val
+from sklearn.model_selection import train_test_split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.20, random_state=42)
+
+
+# Feature Scaling
+from sklearn.preprocessing import StandardScaler
+sc = StandardScaler()
+x_train = sc.fit_transform(X_train)
+x_test = sc.transform(X_test)
+
+
+
+
+
+import lightgbm as lgb
+
+# create dataset for lightgbm
+lgb_train = lgb.Dataset(x_train, y_train)
+lgb_eval = lgb.Dataset(x_test, y_test, reference=lgb_train)
+
+
+
+# specify your configurations as a dict
+params = {
+    'boosting_type': 'gbdt',
+    'num_iterations': 8000,
+    'max_bin': 500,    
+    'objective': 'regression',
+    'max_depth': 5,
+    'metric': {'mae'},
+    'num_leaves': 100,
+    'learning_rate': 0.05,
+    'feature_fraction': 0.7,
+    'bagging_fraction': 0.7,
+    'bagging_seed': 0,
+    'nthread': 4,
+    'verbose': 0,
+    'early_stopping_round': 200,
+    'min_data_in_leaf':100,
+    'lambda_l1': 10, 'lambda_l2': 10,
+    'num_leaves': 100
+}
+
+print('Starting training...')
+# train
+gbm = lgb.train(params,
+                lgb_train,
+                valid_sets=[lgb_train,lgb_eval],verbose_eval=100)
+
+
+print('Starting predicting...')
+# predict
+y_pred = gbm.predict(x_test, num_iteration=gbm.best_iteration)
+
+from sklearn.metrics import mean_absolute_error
+print(mean_absolute_error(y_pred, y_test))
+
+
+
+print('model training completed')
+
+#Preparing test set
+test_ID = test.iloc[:,0]
+test_set = test.iloc[:,3:]
+
+#Scaling test data
+test_set = sc.transform(test_set)
+
+
+pred_test = gbm.predict(test_set, num_iteration=gbm.best_iteration)
+
+
+del test_set
+
+df_test = pd.read_csv('../input/' + 'test_V2.csv')
+
+pred = pred_test
+
+print("fix winPlacePerc")
+for i in range(len(df_test)):
+    winPlacePerc = pred[i]
+    maxPlace = int(df_test.iloc[i]['maxPlace'])
+    if maxPlace == 0:
+        winPlacePerc = 0.0
+    elif maxPlace == 1:
+        winPlacePerc = 1.0
+    else:
+        gap = 1.0 / (maxPlace - 1)
+        winPlacePerc = round(winPlacePerc / gap) * gap
+    
+    if winPlacePerc < 0: winPlacePerc = 0.0
+    if winPlacePerc > 1: winPlacePerc = 1.0    
+    pred[i] = winPlacePerc
+
+    if (i + 1) % 100000 == 0:
+        print(i, flush=True, end=" ")
+
+df_test['winPlacePerc'] = pred
+
+submission = df_test[['Id', 'winPlacePerc']]
+submission.to_csv('submission.csv', index=False)
